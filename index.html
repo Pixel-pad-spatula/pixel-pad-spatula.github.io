@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="PixelPad">
 <link rel="manifest" href="./manifest.json">
-<title>pixelpadv9.0.1</title>
+<title>pixelpadv9.1.0</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.3/ace.js" integrity="sha512-hWCQiPFpU0dM1jkN2dkt/OrdSXO4KN5y2utMvF0ZkacWmRvbOlEygqBW0YiJwq/nn6iywh4XnMGMG6ESQYM7WA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <style>
@@ -1437,7 +1437,8 @@ function switchRibbonTab(tab) {
   lay(); renderDash(); updHeader(); resumeSummaries();
   setTimeout(maybeWelcome, 300);
   setTimeout(recoverWorkspaceFromIdb, 50);
-  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch(e) {}
+  // Ask the browser not to clear PixelPad's storage when space runs low (refused in previews — that's fine)
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch(e) {}
   window.addEventListener('resize', lay);
   window.addEventListener('beforeunload', e => {
     flushSave();
@@ -2323,7 +2324,7 @@ function askPrompt() {
   }
   const withFiles = names.length > 0;
   if (_askMode !== 'explain' && pwaStatus(proj) && pwaStatus(proj).manifest)
-    ask += '\nThis app is installable: keep the <link rel="manifest"> and apple-touch-icon tags in <head> and the navigator.serviceWorker.register script.';
+    ask += '\nThis app is installable: keep the <link rel="manifest"> and apple-touch-icon tags in <head>, the navigator.serviceWorker.register script and the pixelpad-install-button script.';
   const text = withFiles ? buildAIBundle(proj, names, ask, _askMode !== 'explain') : ask + '\n';
   return { text: maskSecretsAll(text), masked: _lastMasked, files: names.length };
 }
@@ -2365,7 +2366,7 @@ function nextStep(p) {
   if (pj && pj.stage !== 'error') return { tone: 'ac', icon: 'cloudUp', title: 'Publishing…', sub: 'Step ' + ({ upload: 1, pages: 2, build: 3 })[pj.stage] + ' of 3: ' + PUB_STAGE_TEXT[pj.stage] + ' — keep working, I’ll tell you when it’s live', btn: 'View', act: 'openDeploy()' };
   if (pj) return { tone: 'er', icon: 'alert', title: 'Publishing failed', sub: pj.msg, btn: 'See why', act: 'openDeploy()' };
   const lostPwa = pwaLostLinks(proj);
-  if (lostPwa) return { tone: 'wa', icon: 'phone', title: 'Can’t be installed right now', sub: 'index.html is missing the ' + lostPwa.missing.join(' and ') + ' link — usually a new file from your AI chat. One tap puts it back.', btn: 'Fix', act: 'fixPwaLinks()' };
+  if (lostPwa && lostPwa.missing.some(m => m !== 'install button')) return { tone: 'wa', icon: 'phone', title: 'Can’t be installed right now', sub: 'index.html is missing the ' + lostPwa.missing.join(' and ') + ' link — usually a new file from your AI chat. One tap puts it back.', btn: 'Fix', act: 'fixPwaLinks()' };
   if (p.lastRunError) return { tone: 'er', icon: 'alert', title: 'Last test had an error', sub: p.lastRunError.msg, btn: 'Report to AI', act: "openAskAI('fix')" };
   const failed = (p.checks || []).filter(c => c.state === 'fail');
   if (failed.length) return { tone: 'er', icon: 'x', title: failed.length + ' check' + (failed.length === 1 ? '' : 's') + ' failed', sub: failed[0].text + (failed[0].note ? ' — ' + failed[0].note : ''), btn: 'Report to AI', act: 'reportFailedChecks()' };
@@ -4727,6 +4728,53 @@ function renderPwaSrc() {
 // Adds what index.html needs to be installable, keeping anything already there:
 // the manifest link, theme colour, iPhone icon, and the service-worker starter.
 // theme = null leaves an existing theme colour alone.
+// In-app "Install app" button. Chrome on Android (155+) checks the whole
+// address when you use its menu, so a second app published at the same
+// address shows "already installed" and won't open. The in-page install
+// prompt still works, so installable apps get a small button that appears
+// only when Chrome can install, and hides once installed or dismissed.
+function installBtnHtml(theme) {
+  const bg = /^#[0-9a-f]{6}$/i.test(theme || '') ? theme : '#111111', fg = _iconTextColor(bg);
+  return '\u003cscript>\n' +
+    "// pixelpad-install-button: Chrome's own menu can refuse to install a second app from the same\n" +
+    "// address (Chrome 155+ on Android); this button still works. Shows only when Chrome can install.\n" +
+    "(function () {\n" +
+    "  if (window.matchMedia && matchMedia('(display-mode: standalone)').matches) return;\n" +
+    "  try { if (sessionStorage.getItem('pp-install-hide')) return; } catch (e) {}\n" +
+    "  var ev = null, box = null;\n" +
+    "  window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); ev = e; show(); });\n" +
+    "  window.addEventListener('appinstalled', function () { ev = null; hide(); });\n" +
+    "  function show() {\n" +
+    "    if (box) { box.style.display = 'flex'; return; }\n" +
+    "    box = document.createElement('div');\n" +
+    "    box.style.cssText = 'position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:2147483000;display:flex;align-items:center;border-radius:26px;background:" + bg + ";color:" + fg + ";box-shadow:0 4px 16px rgba(0,0,0,.35);font:600 15px system-ui,sans-serif';\n" +
+    "    var go = document.createElement('button'); go.type = 'button'; go.textContent = 'Install app';\n" +
+    "    go.style.cssText = 'border:0;background:none;color:inherit;font:inherit;padding:0 6px 0 18px;min-height:48px;cursor:pointer';\n" +
+    "    var x = document.createElement('button'); x.type = 'button'; x.textContent = '✕'; x.setAttribute('aria-label', 'Hide install button');\n" +
+    "    x.style.cssText = 'border:0;background:none;color:inherit;font:inherit;opacity:.75;padding:0 16px 0 8px;min-height:48px;cursor:pointer';\n" +
+    "    go.onclick = function () { if (!ev) return; ev.prompt(); ev.userChoice.then(function () { ev = null; hide(); }); };\n" +
+    "    x.onclick = function () { hide(); try { sessionStorage.setItem('pp-install-hide', '1'); } catch (e) {} };\n" +
+    "    box.appendChild(go); box.appendChild(x); document.body.appendChild(box);\n" +
+    "  }\n" +
+    "  function hide() { if (box) box.style.display = 'none'; }\n" +
+    "})();\n" +
+    '\u003c/script>\n';
+}
+const _HAS_INSTALL_BTN = /pixelpad-install-button|beforeinstallprompt/;
+function addInstallBtn(html, theme) {
+  if (_HAS_INSTALL_BTN.test(html)) return html;
+  const at = html.toLowerCase().lastIndexOf('\u003c/body>');
+  const btn = installBtnHtml(theme);
+  return at >= 0 ? html.slice(0, at) + btn + html.slice(at) : html + '\n' + btn;
+}
+function projThemeColour(proj, html) {
+  const files = (W.projects[proj] || {}).files || {};
+  const m = (html || '').match(/<meta[^>]+name=["']theme-color["'][^>]*content=["'](#[0-9a-f]{6})/i);
+  if (m) return m[1];
+  const MF = pwaManifestName(proj);
+  try { return JSON.parse(files[MF].content).theme_color || null; } catch(e) { return null; }
+}
+
 function pwaLinkHtml(html, MF, theme, opts) {
   opts = opts || {};
   const headAdds = [];
@@ -4750,6 +4798,7 @@ function pwaLinkHtml(html, MF, theme, opts) {
     const at = html.toLowerCase().lastIndexOf('\u003c/body>'); // the real closing tag is the last one
     html = at >= 0 ? html.slice(0, at) + reg + html.slice(at) : html + '\n' + reg;
   }
+  if (opts.installBtn !== false) html = addInstallBtn(html, opts.btnTheme || theme);
   return html;
 }
 // An installable project whose index.html has lost its app links (usually a
@@ -4767,11 +4816,14 @@ function pwaLostLinks(proj, html) {
   const missing = [];
   if (!/<link[^>]+rel=["']manifest["']/i.test(html)) missing.push('manifest');
   if (swName && !/serviceWorker\s*\.\s*register\(/.test(html)) missing.push('service worker');
+  const cur = files['index.html'] && files['index.html'].downloaded !== false ? (files['index.html'].content || '') : '';
+  if (cur !== html && /pixelpad-install-button/.test(cur) && !_HAS_INSTALL_BTN.test(html)) missing.push('install button');
   if (!missing.length) return null;
   let theme = null;
   if (!/<meta[^>]+name=["']theme-color["']/i.test(html)) { try { theme = JSON.parse(files[MF].content).theme_color || null; } catch(e) {} }
   const apple = files['icon-180.png'] ? 'icon-180.png' : files['apple-touch-icon.png'] ? 'apple-touch-icon.png' : names.find(n => /apple-touch-icon[^/]*\.png$/i.test(n)) || false;
-  return { MF, swName, missing, fix: h => pwaLinkHtml(h, MF, theme, { appleIcon: apple, sw: !!swName, swName: swName || 'sw.js' }) };
+  const btnTheme = projThemeColour(proj, html);
+  return { MF, swName, missing, fix: h => pwaLinkHtml(h, MF, theme, { appleIcon: apple, sw: !!swName, swName: swName || 'sw.js', btnTheme }) };
 }
 // One tap from the banner: put the links back, log it, offer Undo
 function fixPwaLinks() {
@@ -4812,6 +4864,7 @@ function pwaPlan(proj, src) {
   if (!/serviceWorker\s*\.\s*register\(/.test(html)) links.push('service worker');
   if (!/<link[^>]+rel=["']apple-touch-icon["']/i.test(html)) links.push('iPhone icon');
   if (links.length) items.push('<b>Links</b> the ' + links.join(', ') + ' in index.html');
+  if (!_HAS_INSTALL_BTN.test(html)) items.push('<b>Adds an “Install app” button</b> — Chrome’s own menu can refuse to install a second app from the same address right now; the button still works');
   return items;
 }
 function renderPwaPlan() {
@@ -4992,7 +5045,7 @@ async function makeInstallable() {
   // Wire it into index.html (only adds what's missing)
   const before = expContent(proj, 'index.html');
   let html = before;
-  html = pwaLinkHtml(html, MF, theme);
+  html = pwaLinkHtml(html, MF, theme, { btnTheme: accent });
   if (html !== before) {
     snapshotFile('index.html', before, 'Before Make installable');
     if (curFile === 'index.html') { cancelSave(); ed().setValue(html, -1); }
@@ -5663,6 +5716,8 @@ async function runInstallCheck(proj, live) {
   }
 
   await swCheck();
+  if (_HAS_INSTALL_BTN.test(html)) add('pass', 'Install button', 'Works even when Chrome’s menu says “already installed”');
+  else add('warn', 'No Install button', 'Chrome on Android can refuse a second app from the same address through its menu. An in-app button still works.', { label: 'Add', act: "ckFix('installbtn')" });
   const idv = man.id ? new URL(man.id, su).href : su.href;
   R.push({ ok: 'info', title: 'App identity', detail: idv.replace(/^https:\/\/[^/]+/, '') + ' — Chrome uses this to tell apps apart', fix: { label: 'New identity', act: "ckFix('newid','" + mpath.replace(/'/g, '') + "')" } });
   return R;
@@ -5701,6 +5756,20 @@ async function openInstallCheck(forceLocal) {
 function ckFix(kind, mpath) {
   const proj = W.activeProject, p = activeProj();
   if (kind === 'relink') { fixPwaLinks(); return openInstallCheck(true); }
+  if (kind === 'installbtn') {
+    commitManualEdits(); flushSave();
+    const f = p.files['index.html']; if (!f || f.downloaded === false) return;
+    const before = f.content || '', after = addInstallBtn(before, projThemeColour(proj, before));
+    if (after === before) return openInstallCheck(true);
+    const undo = [{ name: 'index.html', prev: JSON.parse(JSON.stringify(f)) }];
+    snapshotFile('index.html', before, 'Before adding install button');
+    if (curFile === 'index.html') { cancelSave(); ed().setValue(after, -1); }
+    persistFile('index.html', after);
+    if (curFile === 'index.html') { _editBase = { proj, name: 'index.html', text: after }; cancelSave(); }
+    const lid = logChange('pwa', 'Added an “Install app” button', [{ name: 'index.html', before, after }]);
+    toastAction('Install button added — publish to put it live', 'Undo', () => { undoImport(proj, undo, lid, 'Undone'); openInstallCheck(true); });
+    return openInstallCheck(true);
+  }
   commitManualEdits(); flushSave();
   const MF = mpath && p.files[mpath] ? mpath : pwaManifestName(proj);
   const f = p.files[MF];
